@@ -1,92 +1,99 @@
-from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import csv
 import os
-import requests
-
-# Commented out to use a hardcoded URL instead
-# def generate_file_names():
-#     folder_path = "./urls"
-#     file_name = "urls.txt"
-#     full_path = os.path.join(folder_path, file_name)
-#     print(f"Looking for file at: {full_path}")
-#     return full_path
-
-# Commented out to use a hardcoded URL instead
-# def parse_medicines():
-#     file_name = generate_file_names()
-#     if not os.path.isfile(file_name):
-#         print(f"File not found: {file_name}")
-#         return
-#
-#     with open(file_name, "r", encoding="utf-8") as file:
-#         urls = file.readlines()
-#
-#     for url in urls:
-#         url = url.strip()
-#         if url:
-#             parse_medicine(url)
+import time
 
 
-def parse_medicine(url):
-    print(f"Parsing URL: {url}")
+def parse_medicine(file_path):
+    print(f"Parsing file: {file_path}")
+    options = webdriver.ChromeOptions()
+    driver = webdriver.Chrome(options=options)
+
+    file_url = f"file://{os.path.abspath(file_path)}"
+    print(f"File URL: {file_url}")
+
     try:
-        response = requests.get(url)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.content, "html.parser")
-    except requests.RequestException as e:
-        print(f"Failed to fetch URL: {url}. Error: {e}")
-        return
+        driver.get(file_url)
+        print("Loaded HTML file successfully in Selenium.")
 
-    medication_details = get_medication_details(soup)
-    append_medicine(medication_details)
-    print(f"Completed parsing URL: {url}")
+        # Click button to open the modal
+        try:
+            button = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable(
+                    (By.CSS_SELECTOR, "button[data-qa='prescription-editor-button']")
+                )
+            )
+            button.click()
+            print("Clicked the prescription editor button.")
+        except:
+            print("Prescription editor button not found.")
+            return
+
+        # Wait for the modal to appear
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "div.sc-13oi5ev-0.knKVvD"))
+        )
+        print("Modal appeared.")
+
+        # Extract options for each dropdown in the modal
+        medication_options = extract_options(
+            driver, "select[data-qa='drug-configuration-label-selector']"
+        )
+        form_options = extract_options(
+            driver, "select[data-qa='drug-configuration-form-selector']"
+        )
+        dosage_options = extract_options(
+            driver, "select[data-qa='drug-configuration-dosage-selector']"
+        )
+        quantity_options = extract_options(
+            driver, "select[data-qa='drug-configuration-quantity-selector']"
+        )
+
+        # Collect all extracted data
+        medication_details = {
+            "url": os.path.basename(file_path),  # File name instead of URL
+            "medication_options": medication_options,
+            "form_options": form_options,
+            "dosage_options": dosage_options,
+            "quantity_options": quantity_options,
+        }
+
+        # Append data to CSV
+        append_medicine(medication_details)
+        print(f"Completed parsing file: {file_path}")
+
+    except Exception as e:
+        print(f"Failed to parse file: {file_path}. Error: {e}")
+    finally:
+        driver.quit()
 
 
-def get_medication_details(soup):
-    medication_details = {}
-
-    # Extracting data for medication options
-    medication_options = []
-    medication_select = soup.find("select", {"id": "MDS-component-id-:r4:"})
-    if medication_select:
-        for option in medication_select.find_all("option"):
-            medication_options.append(option.text)
-
-    # Extracting data for form
-    form_options = []
-    form_select = soup.find("select", {"id": "MDS-component-id-:r5:"})
-    if form_select:
-        for option in form_select.find_all("option"):
-            form_options.append(option.text)
-
-    # Extracting data for dosage
-    dosage_options = []
-    dosage_select = soup.find("select", {"id": "MDS-component-id-:r6:"})
-    if dosage_select:
-        for option in dosage_select.find_all("option"):
-            dosage_options.append(option.text)
-
-    # Extracting data for quantity
-    quantity_options = []
-    quantity_select = soup.find("select", {"id": "MDS-component-id-:r7:"})
-    if quantity_select:
-        for option in quantity_select.find_all("option"):
-            quantity_options.append(option.text)
-
-    medication_details = {
-        "url": soup.title.string,
-        "medication_options": medication_options,
-        "form_options": form_options,
-        "dosage_options": dosage_options,
-        "quantity_options": quantity_options,
-    }
-    return medication_details
+def extract_options(driver, selector):
+    """
+    Helper function to extract options from a dropdown given a CSS selector.
+    """
+    try:
+        select_element = driver.find_element(By.CSS_SELECTOR, selector)
+        options = [
+            option.text
+            for option in select_element.find_elements(By.TAG_NAME, "option")
+        ]
+        print(f"Options for {selector}: {options}")
+        return options
+    except:
+        print(f"No options found for {selector}")
+        return []
 
 
 def append_medicine(medication_details):
     file_exists = os.path.isfile("medication_details.csv")
+
     with open("medication_details.csv", mode="a", newline="") as file:
         writer = csv.writer(file)
+
         if not file_exists:
             writer.writerow(
                 [
@@ -97,6 +104,7 @@ def append_medicine(medication_details):
                     "quantity_options",
                 ]
             )
+
         writer.writerow(
             [
                 medication_details["url"],
@@ -106,10 +114,25 @@ def append_medicine(medication_details):
                 ", ".join(medication_details["quantity_options"]),
             ]
         )
-    print(f"Appended medication details for URL: {medication_details['url']}")
+    print(f"Appended medication details for file: {medication_details['url']}")
+
+
+def process_file_or_folder(path):
+    """
+    Processes a single file or all files in a folder.
+    """
+    if os.path.isdir(path):
+        for filename in os.listdir(path):
+            if filename.endswith(".html"):
+                file_path = os.path.join(path, filename)
+                parse_medicine(file_path)
+    elif os.path.isfile(path):
+        parse_medicine(path)
+    else:
+        print("Invalid path provided. Please provide a valid file or directory.")
 
 
 if __name__ == "__main__":
-    # Hardcoded URL for testing
-    url = "https://www.goodrx.com/vyvanse"
-    parse_medicine(url)
+    # Specify either a single file or a directory
+    path = input("Enter the path to the file or folder: ")
+    process_file_or_folder(path)
